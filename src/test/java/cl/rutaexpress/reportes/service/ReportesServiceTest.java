@@ -3,6 +3,7 @@ package cl.rutaexpress.reportes.service;
 import cl.rutaexpress.reportes.dto.*;
 import cl.rutaexpress.reportes.entity.RegistroAnaliticoEnvio;
 import cl.rutaexpress.reportes.repository.RegistroAnaliticoEnvioRepository;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -28,11 +29,13 @@ class ReportesServiceTest {
     @Captor
     private ArgumentCaptor<RegistroAnaliticoEnvio> captor;
 
+    private SimpleMeterRegistry meterRegistry;
     private ReportesService service;
 
     @BeforeEach
     void setUp() {
-        service = new ReportesService(repository);
+        meterRegistry = new SimpleMeterRegistry();
+        service = new ReportesService(repository, meterRegistry);
     }
 
     @Test
@@ -175,5 +178,47 @@ class ReportesServiceTest {
         assertEquals(50L, resultado.get(0).totalGestionados());
         assertEquals(45L, resultado.get(0).totalEntregados());
         assertEquals(90.0, resultado.get(0).tasaExito()); // 45 / 50 * 100
+    }
+
+    @Test
+    @DisplayName("C16: Evento con envioId existente y otro codigo no sobrescribe registro y registra metrica")
+    void eventoConOtroCodigoNoSobrescribeRegistro() {
+        RegistroAnaliticoEnvio existente = new RegistroAnaliticoEnvio(
+                105L,
+                "RTX-2026-000105",
+                "CREADO",
+                LocalDateTime.now().minusHours(1),
+                "Envio Express",
+                "operador@rutaexpress.cl",
+                "OPERADOR"
+        );
+
+        EventoEnvioKafkaDTO dtoInconsistente = new EventoEnvioKafkaDTO(
+                UUID.randomUUID(),
+                105L,
+                "RE-ANL-TEST-105",
+                "CREADO",
+                "ENTREGADO",
+                "falso@rutaexpress.cl",
+                "OPERADOR",
+                LocalDateTime.now(),
+                Collections.emptyMap()
+        );
+
+        when(repository.findByEnvioId(105L)).thenReturn(Optional.of(existente));
+
+        RegistroAnaliticoEnvio resultado = service.procesarEvento(dtoInconsistente);
+
+        assertNotNull(resultado);
+        assertEquals("RTX-2026-000105", resultado.getCodigoSeguimiento());
+        assertEquals("CREADO", resultado.getEstadoActual());
+        assertEquals("operador@rutaexpress.cl", resultado.getUltimoOperadorEmail());
+        verify(repository, never()).save(any());
+
+        double count = meterRegistry.get("reportes.eventos.inconsistentes")
+                .tag("tipo", "envio_id_con_otro_codigo")
+                .counter()
+                .count();
+        assertEquals(1.0, count);
     }
 }
