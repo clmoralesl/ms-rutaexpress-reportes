@@ -3,6 +3,7 @@ package cl.rutaexpress.reportes.service;
 import cl.rutaexpress.reportes.dto.*;
 import cl.rutaexpress.reportes.entity.RegistroAnaliticoEnvio;
 import cl.rutaexpress.reportes.repository.RegistroAnaliticoEnvioRepository;
+import io.micrometer.core.instrument.MeterRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -21,9 +22,11 @@ public class ReportesService {
     private static final Logger log = LoggerFactory.getLogger(ReportesService.class);
 
     private final RegistroAnaliticoEnvioRepository repository;
+    private final MeterRegistry meterRegistry;
 
-    public ReportesService(RegistroAnaliticoEnvioRepository repository) {
+    public ReportesService(RegistroAnaliticoEnvioRepository repository, MeterRegistry meterRegistry) {
         this.repository = repository;
+        this.meterRegistry = meterRegistry;
     }
 
     @Transactional
@@ -37,7 +40,15 @@ public class ReportesService {
         RegistroAnaliticoEnvio registro;
 
         if (existenteOpt.isPresent()) {
-            registro = existenteOpt.get();
+            RegistroAnaliticoEnvio existente = existenteOpt.get();
+            if (dto.codigoSeguimiento() != null && !dto.codigoSeguimiento().equals(existente.getCodigoSeguimiento())) {
+                log.warn("Evento analitico inconsistente: el envioId ya esta registrado con otro codigo de seguimiento. No se modifica el registro [envioId={}, codigoRegistrado={}, codigoRecibido={}]",
+                        dto.envioId(), existente.getCodigoSeguimiento(), limpiarParaLog(dto.codigoSeguimiento()));
+                meterRegistry.counter("reportes.eventos.inconsistentes", "tipo", "envio_id_con_otro_codigo").increment();
+                return existente;
+            }
+
+            registro = existente;
             registro.actualizarTransicion(
                     dto.estadoNuevo(),
                     dto.timestamp(),
@@ -65,6 +76,10 @@ public class ReportesService {
                 guardado.getEnvioId(), guardado.getEstadoActual(), guardado.getLeadTimeHoras());
 
         return guardado;
+    }
+
+    private static String limpiarParaLog(String valor) {
+        return valor == null ? null : valor.replace('\r', '_').replace('\n', '_');
     }
 
     public KpisResumenResponse obtenerKpis(String rango) {
